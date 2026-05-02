@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Class Attendance System - FaceID</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+    <style>
+        .hidden { display: none; }
+        #video-container { position: relative; width: 640px; height: 480px; margin: 0 auto; }
+        canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+        .text-in { color: #059669; font-weight: bold; } /* Green-600 */
+        .text-out { color: #dc2626; font-weight: bold; } /* Red-600 */
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+
+    <!-- Login Section -->
+    <div id="login-section" class="min-h-screen flex items-center justify-center">
+        <div class="bg-white p-8 rounded-lg shadow-md w-96">
+            <h2 class="text-2xl font-bold mb-6 text-center text-blue-600">Admin Login</h2>
+            <input type="text" id="username" placeholder="User ID (admin)" class="w-full p-2 mb-4 border rounded">
+            <input type="password" id="password" placeholder="Password (password)" class="w-full p-2 mb-4 border rounded">
+            <button onclick="login()" class="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700">Login</button>
+        </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="hidden min-h-screen">
+        <nav class="bg-blue-800 text-white p-4 flex justify-between items-center">
+            <h1 class="text-xl font-bold">Class Attendance System</h1>
+            <button onclick="logout()" class="bg-red-500 px-4 py-1 rounded">Logout</button>
+        </nav>
+
+        <div class="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            
+            <!-- Left Side: Registration & Camera -->
+            <div class="space-y-6">
+                <div class="bg-white p-6 rounded shadow">
+                    <h3 class="text-lg font-bold mb-4">Register New Student</h3>
+                    <div class="grid grid-cols-2 gap-2">
+                        <input type="text" id="stdName" placeholder="Full Name" class="p-2 border rounded">
+                        <input type="text" id="stdRoll" placeholder="Roll No (Unique ID)" class="p-2 border rounded">
+                        <input type="text" id="stdClass" placeholder="Class" class="p-2 border rounded">
+                        <input type="date" id="stdDOB" class="p-2 border rounded">
+                    </div>
+                    <button id="regBtn" onclick="captureSpecimen()" class="mt-4 bg-green-600 text-white p-2 rounded w-full hover:bg-green-700">Capture & Save Student</button>
+                </div>
+
+                <div class="bg-white p-6 rounded shadow">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-bold">Live Face Recognition</h3>
+                        <span id="scan-indicator" class="text-xs bg-red-100 text-red-600 px-2 py-1 rounded">Initializing...</span>
+                    </div>
+                    <div id="video-container" class="bg-black rounded overflow-hidden">
+                        <video id="video" width="640" height="480" autoplay muted playsinline></video>
+                    </div>
+                    <button id="scanBtn" onclick="triggerScan()" class="mt-4 bg-blue-600 text-white p-4 rounded-lg w-full text-xl font-bold hover:bg-blue-700 disabled:bg-gray-400" disabled>
+                        READY TO SCAN
+                    </button>
+                    <p id="status" class="mt-2 text-sm text-blue-600 font-medium text-center">Please wait, loading AI...</p>
+                </div>
+            </div>
+
+            <!-- Right Side: Attendance Report -->
+            <div class="bg-white p-6 rounded shadow">
+                <h3 class="text-lg font-bold mb-4">Attendance Summary</h3>
+                <div class="flex gap-2 mb-4">
+                    <input type="date" id="filterDate" class="p-2 border rounded text-sm">
+                    <button onclick="viewReport()" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">Refresh Report</button>
+                </div>
+                <div class="overflow-x-auto h-[500px]">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr class="bg-gray-200 sticky top-0">
+                                <th class="p-2 border">Roll</th>
+                                <th class="p-2 border">Name</th>
+                                <th class="p-2 border text-green-700">In Time</th>
+                                <th class="p-2 border text-red-700">Out Time</th>
+                                <th class="p-2 border">Total Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reportTable"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let faceMatcher = null;
+        const video = document.getElementById('video');
+        let students = JSON.parse(localStorage.getItem('students')) || [];
+        let attendance = JSON.parse(localStorage.getItem('attendance')) || {};
+
+        function login() {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            if(user === 'admin' && pass === 'password') {
+                document.getElementById('login-section').classList.add('hidden');
+                document.getElementById('dashboard').classList.remove('hidden');
+                initSystem();
+            } else {
+                alert('Use admin / password to login');
+            }
+        }
+
+        function logout() { location.reload(); }
+
+        async function initSystem() {
+            try {
+                const MODEL_URL = 'https://raw.githubusercontent.com/vladmandic/face-api/master/model/';
+                document.getElementById('status').innerText = "Loading AI Models...";
+                
+                await Promise.all([
+                    faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                ]);
+
+                const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    video.play();
+                    document.getElementById('status').innerText = "System Ready. Click button to scan.";
+                    document.getElementById('scan-indicator').innerText = "SYSTEM READY";
+                    document.getElementById('scan-indicator').classList.replace('text-red-600', 'text-green-600');
+                    document.getElementById('scanBtn').disabled = false;
+                    refreshFaceMatcher();
+                };
+                
+                document.getElementById('filterDate').valueAsDate = new Date();
+                viewReport();
+                
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').innerText = "Error initializing camera/AI.";
+            }
+        }
+
+        function refreshFaceMatcher() {
+            if (students.length === 0) {
+                faceMatcher = null;
+                return;
+            }
+            const labeledDescriptors = students.map(s => {
+                const desc = new Float32Array(s.descriptor);
+                return new faceapi.LabeledFaceDescriptors(s.roll, [desc]);
+            });
+            faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6);
+        }
+
+        async function triggerScan() {
+            const btn = document.getElementById('scanBtn');
+            const statusEl = document.getElementById('status');
+            
+            btn.disabled = true;
+            btn.innerText = "SCANNING...";
+            statusEl.innerText = "Analyzing face...";
+
+            if (!faceMatcher) {
+                alert("No students registered yet!");
+                resetButton();
+                return;
+            }
+
+            const detections = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+
+            if (detections) {
+                const match = faceMatcher.findBestMatch(detections.descriptor);
+                if (match.label !== 'unknown') {
+                    markAttendance(match.label);
+                } else {
+                    statusEl.innerText = "Unknown person detected.";
+                    setTimeout(resetButton, 2000);
+                }
+            } else {
+                statusEl.innerText = "No face detected. Please stand in front of camera.";
+                setTimeout(resetButton, 2000);
+            }
+        }
+
+        function resetButton() {
+            const btn = document.getElementById('scanBtn');
+            btn.disabled = false;
+            btn.innerText = "READY TO SCAN";
+            document.getElementById('status').innerText = "System Ready.";
+        }
+
+        function markAttendance(roll) {
+            const now = new Date();
+            const dateStr = now.toISOString().split('T')[0];
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            if (!attendance[dateStr]) attendance[dateStr] = {};
+            
+            // Logic: If no record today, mark IN. If IN exists but no OUT, mark OUT.
+            if (!attendance[dateStr][roll]) {
+                attendance[dateStr][roll] = { in: timeStr, out: null, duration: null };
+                showMatchUI(roll, "IN marked (Green)", "text-green-600");
+            } else if (attendance[dateStr][roll].in && !attendance[dateStr][roll].out) {
+                attendance[dateStr][roll].out = timeStr;
+                attendance[dateStr][roll].duration = calculateDuration(attendance[dateStr][roll].in, timeStr);
+                showMatchUI(roll, "OUT marked (Red)", "text-red-600");
+            } else {
+                alert("Attendance already completed for today.");
+            }
+
+            localStorage.setItem('attendance', JSON.stringify(attendance));
+            viewReport();
+            setTimeout(resetButton, 3000);
+        }
+
+        function calculateDuration(inTime, outTime) {
+            const start = new Date(`2000/01/01 ${inTime}`);
+            const end = new Date(`2000/01/01 ${outTime}`);
+            const diffMs = end - start;
+            const diffHrs = Math.floor(diffMs / 3600000);
+            const diffMins = Math.floor((diffMs % 3600000) / 60000);
+            return `${diffHrs}h ${diffMins}m`;
+        }
+
+        function showMatchUI(roll, msg, colorClass) {
+            const student = students.find(s => s.roll === roll);
+            const statusEl = document.getElementById('status');
+            statusEl.innerHTML = `<span class="${colorClass}">MATCH: ${student.name} - ${msg}</span>`;
+        }
+
+        async function captureSpecimen() {
+            const name = document.getElementById('stdName').value;
+            const roll = document.getElementById('stdRoll').value;
+            if(!name || !roll) return alert("Enter Name and Roll");
+
+            const detections = await faceapi.detectSingleFace(video).withFaceLandmarks().withFaceDescriptor();
+            if (detections) {
+                students.push({
+                    name, roll,
+                    class: document.getElementById('stdClass').value,
+                    descriptor: Array.from(detections.descriptor)
+                });
+                localStorage.setItem('students', JSON.stringify(students));
+                refreshFaceMatcher();
+                alert("Student Saved!");
+                viewReport();
+            } else {
+                alert("Face not detected");
+            }
+        }
+
+        function viewReport() {
+            const date = document.getElementById('filterDate').value;
+            const tableBody = document.getElementById('reportTable');
+            tableBody.innerHTML = "";
+            
+            const dailyData = attendance[date] || {};
+
+            students.forEach(student => {
+                const record = dailyData[student.roll] || {};
+                const row = document.createElement('tr');
+                row.className = "border-b text-center";
+                row.innerHTML = `
+                    <td class="p-2 border">${student.roll}</td>
+                    <td class="p-2 border font-medium text-left">${student.name}</td>
+                    <td class="p-2 border text-in">${record.in || '-'}</td>
+                    <td class="p-2 border text-out">${record.out || '-'}</td>
+                    <td class="p-2 border font-bold">${record.duration || '-'}</td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+    </script>
+</body>
+</html>
